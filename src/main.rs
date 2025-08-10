@@ -1,39 +1,40 @@
-use dotenv::dotenv;
-use sqlx::postgres::PgPoolOptions;
-use std::env;
+use std::net::{TcpListener,TcpStream};
+use std::io::{Read,Write};
+use std::thread;
 
-#[tokio::main]
-async fn main() -> Result<(), sqlx::Error> {
-    // Load environment variables from .env
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
+fn handle_client(mut stream: TcpStream) {
+    let mut buffer = [0; 512];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                // Client closed connection
+                println!("Client disconnected");
+                break;
+            }
+            Ok(size) => {
+                println!("Received: {}", String::from_utf8_lossy(&buffer[..size]));
+                if let Err(e) = stream.write_all(&buffer[..size]) {
+                    eprintln!("Failed to write to client: {}", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read from client: {}", e);
+                break;
+            }
+        }
+    }
+}
 
-    // Create a connection pool
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await?;
 
-    // Sample data
-    let fullname = "John Doe";
-    let username = "johnd";
-    let email = "johnd@example.com";
-    let phone_number = Some("+911234567890"); // Option<String> so it can be NULL
+fn main() -> std::io::Result<()>{
+    let listener = TcpListener::bind("127.0.0.1:7878")?;
+    println!("Connection successful!");
 
-    // Insert query
-    sqlx::query!(
-        r#"
-        INSERT INTO USERS (fullname, username, email, phone_number)
-        VALUES ($1, $2, $3, $4)
-        "#,
-        fullname,
-        username,
-        email,
-        phone_number
-    )
-    .execute(&pool)
-    .await?;
+    for stream in listener.incoming(){
+        let stream = stream?;
+        thread::spawn(||handle_client(stream));
+    }
 
-    println!("User inserted successfully!");
     Ok(())
 }
