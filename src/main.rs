@@ -1,82 +1,200 @@
 use std::net::{TcpListener,TcpStream};
 use std::io::{Read,Write};
-use std::thread;
+use std::{thread};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::fs::File;
+use std::path::Path;
+
+#[macro_use]
+extern crate lazy_static;
 
 mod controller;//tells rustc to look for controller.rs or mod.rs inside controller directory    
 
-fn parse_http_request(request: &str) -> Option<(String, String, String)> {
-    if let Some(first_line) = request.split("\r\n").next() {
-        let parts: Vec<&str> = first_line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            let method = parts[0].to_string();
-            let path = parts[1].to_string();
-            let version = parts[2].to_string();
-            return Some((method, path, version));
-        }
-    }
-    None
+struct HttpRequest{
+    method: String,
+    path: String,
+    version: String,
+    headers: HashMap<String,String>,
+    body: Vec<u8>,
 }
 
-fn handle_request(stream: &mut TcpStream,method: &str,path: &str,version: &str,body: &[u8]) -> std::io::Result<()>{
-    match path{
-        "/login" => controller::login::handle_login(stream,&method,&path,&version,body),//Ashwins function name inside controller folder
-        "/register" => controller::register::handle_register(stream,&method,&path,&version,body),
-        _ => {
-            let response = "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found";
-            stream.write_all(response.as_bytes())?;
-            Ok(())
+struct HttpResponse{
+    status_code: u16,
+    status_text: String,
+    headers: HashMap<String,String>,
+    body: Vec<u8>,
+}
+//Allows to create characteristics for the struct
+impl HttpResponse{
+    fn new(status_code: u16,status_text: &str) -> Self{
+        HttpResponse { 
+            status_code, 
+            status_text: status_text.to_string(), 
+            headers: HashMap::new(), 
+            body: Vec::new(),
         }
+    }
+
+    fn to_bytes(&self) -> Vec<u8>{
+        let mut response_string = format!("HTTP/1.1 {} {}\r\n",self.status_code,self.status_text);
+        for (key,value) in &self.headers{
+            response_string.push_str(&format!("{}: {}\r\n",key,value));
+        }
+        response_string.push_str("\r\n");
+
+        let mut response_bytes = response_string.into_bytes();
+        response_bytes.extend_from_slice(&self.body);
+        response_bytes
     }
 }
 
-fn find_headers_end(buffer: &[u8]) -> Option<usize>{
-    let double_newline = b"\r\n\r\n";
-    buffer.windows(double_newline.len()).position(|window| window == double_newline)
-        .map(|pos| pos + double_newline.len())
+type Handler = fn(&HttpRequest) -> HttpResponse;
+
+lazy_static! {
+    static ref ROUTES: Arc<HashMap<&'static str,HashMap<&'static str,Handler>>> = {
+        let mut routes = HashMap::new();
+
+        /*         
+        let mut login_handlers = HashMap::new();
+        login_handlers.insert("POST",controller::login::handle_login as Handler);
+        routes.insert("/login",login_handlers);
+        */
+        let mut register_handlers = HashMap::new();
+        register_handlers.insert("POST",controller::register::handle_register as Handler);
+        routes.insert("/register",register_handlers);
+
+        Arc::new(routes)//adding a semicolon makes the block return nothing
+    };
+
+}
+
+fn parse_http_request(request_str: &str) -> Option<HttpRequest> {
+    let mut lines = request_str.lines();
+    let first_line = lines.next()?;
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
+    let version = parts[2].to_string();
+
+    let mut headers = HashMap::new();
+    let mut body_start = None;
+
+    for (i, line) in lines.enumerate() {
+        if line.is_empty() {
+            body_start = Some(i + 2); // +2 for the first line and the empty line itself
+            break;
+        }
+        let header_parts: Vec<&str> = line.splitn(2, ':').collect();
+        if header_parts.len() == 2 {
+            headers.insert(
+                header_parts[0].trim().to_string(),
+                header_parts[1].trim().to_string(),
+            );
+        }
+    }
+
+    let body_str = if let Some(start) = body_start {
+        request_str.lines().skip(start).collect::<Vec<&str>>().join("\n")
+    } else {
+        String::new()
+    };
+    
+    Some(HttpRequest {
+        method,
+        path,
+        version,
+        headers,
+        body: body_str.into_bytes(),
+    })
 }
 
 fn handle_client(mut stream: TcpStream) {
     let mut buffer = [0; 2048];
-    let mut headers_end = 0;
-    
-    match stream.read(&mut buffer) {
-        Ok(0) => {
-            // Client closed connection
+
+    if let Ok(size) = stream.read(&mut buffer) {
+        if size == 0 {
             println!("Client disconnected");
             return;
         }
-        Ok(size) => {
-            if let Some(pos) = find_headers_end(&buffer[..size]){
-                headers_end = pos;
-            }
-            else{
-                println!("Failed to find the end of the headers!");
-                let response = "HTTP/1.1 400 Bad Request\r\n\r\nBad Request";
-                stream.write_all(response.as_bytes()).unwrap();
-                return;
-            }
-            let request_str = String::from_utf8_lossy(&buffer[..headers_end]);
-            let body = &buffer[headers_end..size];
-            println!("Raw Request: {}",request_str);
-            
-            if let Some((method,path,version)) = parse_http_request(&request_str){
-                handle_request(&mut stream,&method,&path,&version,body);
-            }
-            else{
-                println!("Failed to parse the request!");
-            }
 
-            if let Err(e) = stream.write_all(&buffer[..size]) {
+        let request_str = String::from_utf8_lossy(&buffer[..size]);
+        println!("Raw Request: {}", request_str);
+
+        if let Some(request) = parse_http_request(&request_str) {
+            let response = find_and_run_handler(&request);
+            if let Err(e) = stream.write_all(&response.to_bytes()) {
                 eprintln!("Failed to write to client: {}", e);
             }
+        } else {
+            let response = HttpResponse::new(400, "Bad Request");
+            stream.write_all(&response.to_bytes()).unwrap();
         }
-        Err(e) => {
-            eprintln!("Failed to read from client: {}", e);
-            return;
-        }
+    } else {
+        eprintln!("Failed to read from client");
     }
 }
+fn find_and_run_handler(request: &HttpRequest) -> HttpResponse {
+    if let Some(method_map) = ROUTES.get(request.path.as_str()) {
+        if let Some(handler) = method_map.get(request.method.as_str()) {
+            return handler(request);
+        }
+    }
+    return handle_static_file(request);
+}
+fn guess_mime_type(path: &str) -> &str{
+    if path.ends_with(".html"){
+        "text/html"
+    }
+    else if path.ends_with(".css"){
+        "text/css"
+    }
+    else if path.ends_with(".js"){
+        "application/javascript"
+    }
+    else if path.ends_with("json"){
+        "application/json"
+    }
+    else{
+        "text/plain"
+    }
+}
+fn handle_static_file(request: &HttpRequest) -> HttpResponse{
+    let mut file_path = request.path.clone();
 
+    if file_path == "/"{
+        file_path = "/index.html".to_string();
+    }
+    let full_path = format!("./static{}",file_path);
+    let path = Path::new(&full_path);
+
+    if let Ok(mut file) = File::open(&path){
+        let mut file_contents = Vec::new();
+        match file.read_to_end(&mut file_contents){
+            Ok(_) => {
+                let mut response = HttpResponse::new(200,"OK");
+                response.headers.insert("Content-Type".to_string(),guess_mime_type(&full_path).to_string());
+                response.body = file_contents;
+                response
+            }
+            Err(_) => {
+                let mut response = HttpResponse::new(500,"Internal Server Error");
+                response.body = b"<h1>500 Internal Server Error!We Sincerely apologies</h1>".to_vec();
+                response
+            }
+        }
+    }
+    else{
+        let mut response = HttpResponse::new(404,"Not Found");
+        response.body = b"<h1>404 Not Found</h1>".to_vec();
+        response
+    }
+}
 
 fn main() -> std::io::Result<()>{
     let listener = TcpListener::bind("127.0.0.1:7878")?;
