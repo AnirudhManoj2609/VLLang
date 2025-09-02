@@ -6,3 +6,6 @@
 *.dylib
 *.dll
 *.a
+.env
+.env.*
+!.env.example

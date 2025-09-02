@@ -9,6 +9,7 @@ use std::path::Path;
 #[macro_use]
 extern crate lazy_static;
 
+mod database;
 mod controller;//tells rustc to look for controller.rs or mod.rs inside controller directory    
 
 struct HttpRequest{
@@ -197,6 +198,19 @@ fn handle_static_file(request: &HttpRequest) -> HttpResponse{
 }
 
 fn main() -> std::io::Result<()>{
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    match rt.block_on(database::connection::create_db_pool()){
+        Ok(pool) => {
+            println!("Database connection successful!");
+            database::connection::set_global_pool(pool);
+        }
+        Err(e) => {
+            println!("Database connection failed: {}",e);
+        }
+    }
+
     let listener = TcpListener::bind("127.0.0.1:7878")?;
     println!("Connection successful!");
 
