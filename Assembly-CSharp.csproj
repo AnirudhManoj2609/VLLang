@@ -65,12 +65,21 @@
     <Analyzer Include="/home/anirudhmanoj/Unity/Hub/Editor/6000.0.33f1/Editor/Data/Tools/Unity.SourceGenerators/Unity.UIToolkit.SourceGenerator.dll" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Assets/UI/scripts/Initializer.cs" />
     <Compile Include="Assets/UI/scripts/Landing.cs" />
+    <Compile Include="Assets/UI/scripts/Register.cs" />
     <Compile Include="Assets/TutorialInfo/Scripts/Readme.cs" />
+    <Compile Include="Assets/UI/scripts/Login.cs" />
+    <Compile Include="Assets/UI/scripts/APIClient.cs" />
+    <Compile Include="Assets/UI/scripts/PanelManager.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Assets/UI/uxml/Register.uxml" />
+    <None Include="Assets/UI/uss/register.uss" />
+    <None Include="Assets/UI/uss/login.uss" />
     <None Include="Assets/UI/uss/landing.uss" />
     <None Include="Assets/UI/uxml/Landing.uxml" />
+    <None Include="Assets/UI/uxml/Login.uxml" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="UnityEngine">
